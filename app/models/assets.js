@@ -1,5 +1,5 @@
-var mongoose = require('mongoose'),
-    Schema = mongoose.Schema
+import mongoose from 'mongoose';
+const { Schema } = mongoose;
 
 var AssetSchema = new Schema({
 
@@ -18,22 +18,26 @@ var AssetSchema = new Schema({
     usePushEach: true
 })
 
-AssetSchema.index({ installation: 1 });
+AssetSchema.index({ name: 1 });
+AssetSchema.index({ createdAt: 1 });
+AssetSchema.index({ playlists: 1 });
+
 
 AssetSchema.statics = {
-    load: function (id, cb) {
-        this.findOne({_id: id})
-            .exec(cb)
+    async load(id) {
+        return await this.findOne({ _id: id }).exec();
     },
-    list: function (options, cb) {
-        var criteria = options.criteria || {}
 
-        this.find(criteria)
-            .sort({name: 1}) // sort by date
+    async list(options) {
+        const criteria = options.criteria || {};
+
+        return await this.find(criteria)
+            .sort({ name: 1 }) // sort by date
             .limit(options.perPage)
             .skip(options.perPage * options.page)
-            .exec(cb)
+            .exec();
     }
-}
+};
 
-mongoose.model('Asset', AssetSchema)
+
+export const Asset = mongoose.model('Asset', AssetSchema);

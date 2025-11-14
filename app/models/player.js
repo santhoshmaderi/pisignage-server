@@ -1,7 +1,7 @@
-var mongoose = require('mongoose'),
-    Schema = mongoose.Schema
+import mongoose from 'mongoose';
+const { Schema } = mongoose;
 
-var PlayerSchema = new Schema({
+const PlayerSchema = new Schema({
     name:                   String,
     group:                  {_id: {type: Schema.ObjectId, ref: 'Group', index: true},
                                         name: {type: String, default: 'default'}},
@@ -46,32 +46,32 @@ var PlayerSchema = new Schema({
     cecTvStatus:            {type: Boolean, default : true},
     piTemperature:          {type:String},
     uptime:                 {type:String}
-}, {
-    usePushEach: true
-})
+});
+
+PlayerSchema.index({ name: 1 });
+
+PlayerSchema.index({ configLocation: 1 });
+PlayerSchema.index({ ip: 1 });
 
 
 
-PlayerSchema.path('cpuSerialNumber').validate(function (name) {
-    return name.length > 0
-}, 'cpuSerialNumber cannot be blank')
+PlayerSchema.path('cpuSerialNumber').validate((cpuSerialNumber) => {
+    return cpuSerialNumber.length > 0;
+}, 'cpuSerialNumber cannot be blank');
 
 PlayerSchema.statics = {
-   load: function (id, cb) {
-        this.findOne({ _id: id })
-            .exec(cb)
+    async load(id) {
+        return await this.findById(id);
     },
 
-    list: function (options, cb) {
-        var criteria = options.criteria || {}
-
-        this.find(criteria)
-            .sort({name: 1}) // sort by date
+    async list(options) {
+        const criteria = options.criteria || {};
+        return await this.find(criteria)
+            .sort({name: 1}) // sort by name
             .limit(options.perPage)
-            .skip(options.perPage * options.page)
-            .exec(cb)
+            .skip(options.perPage * options.page);
     }
-}
+};
 
-mongoose.model('Player', PlayerSchema)
+export const Player = mongoose.model('Player', PlayerSchema);
 

@@ -1,38 +1,24 @@
-/**
- * Module dependencies.
- */
 
-var mongoose = require('mongoose'),
-    Schema = mongoose.Schema
 
-/**
- * Setters and Getters
- */
+import mongoose from 'mongoose';
+const { Schema } = mongoose;
 
-/**
- * Post Schema
- */
-var LabelSchema= new Schema({
+
+const LabelSchema= new Schema({
     name:                   {type: String,unique: true, index: true},
     mode:                   {type: String},
 
     createdAt:              {type: Date, default: Date.now},
     createdBy:              {_id: {type: Schema.ObjectId, ref: 'User'}, name: String}
-}, {
-    usePushEach: true
-})
+}
+)
 
-LabelSchema.path('name').validate(function (name) {
-    return name.length > 0
-}, 'name cannot be blank')
+LabelSchema.index({ name: 1 });
 
 
-/**
- * Pre & Post method hooks
- */
-/**
- * Pre-remove hook
- */
+LabelSchema.path('name').validate((name) => {
+    return name.length > 0;
+}, 'name cannot be blank');
 
 
 /**
@@ -40,37 +26,19 @@ LabelSchema.path('name').validate(function (name) {
  */
 
 LabelSchema.statics = {
-    /**
-     * Find article by id
-     *
-     * @param {ObjectId} id
-     * @param {Function} cb
-     * @api private
-     */
-
-    load: function (id, cb) {
-        this.findOne({ _id: id })
-            .exec(cb)
+    async load(id) {
+        return await this.findOne({ _id: id }).exec();
     },
 
-    /**
-     * List articles
-     *
-     * @param {Object} options
-     * @param {Function} cb
-     * @api private
-     */
+    async list(options) {
+        const criteria = options.criteria || {};
 
-    list: function (options, cb) {
-        var criteria = options.criteria || {}
-
-        this.find(criteria)
-            .sort({name: 1}) // sort by date
+        return await this.find(criteria)
+            .sort({ name: 1 })
             .limit(options.perPage)
             .skip(options.perPage * options.page)
-            .exec(cb)
+            .exec();
     }
-}
+};
 
-mongoose.model('Label', LabelSchema)
-
+export const Label = mongoose.model('Label', LabelSchema);

@@ -1,7 +1,7 @@
-var mongoose = require('mongoose'),
-    Schema = mongoose.Schema
+import mongoose from 'mongoose';
+const { Schema } = mongoose;
 
-var GroupSchema = new Schema({
+const GroupSchema = new Schema({
     name:                   {type: String,index: true},
     description:            String,
 
@@ -71,43 +71,42 @@ var GroupSchema = new Schema({
                                 reverse: {type: Boolean, default: false}
                             },
     emergencyMessage:       {
-                                enable: false,
+                                enable: {type: Boolean, default: false},
                                 msg: {type: String, default: ""},
                                 hPos: {type: String, default: "middle"},
                                 vPos: {type: String, default: "middle"}
                             },
     createdAt:              {type: Date, default: Date.now},
     createdBy:              {_id: {type: Schema.ObjectId, ref: 'User'}, name: String}
-}, {
-    usePushEach: true
-})
+}
+);
+
+GroupSchema.index({ name: 1 });
 
 
-GroupSchema.path('name').validate(function (name) {
-    return name.length > 0
-}, 'name cannot be blank')
+GroupSchema.path('name').validate((name) => {
+    return name.length > 0;
+}, 'name cannot be blank');
 
 GroupSchema.statics = {
 
-    load: function (id, cb) {
-        this.findOne({ _id: id })
-            .exec(cb)
+    async load(id) {
+        return await this.findById(id);
     },
 
-    list: function (options, cb) {
-        var criteria = options.criteria || {}
-
+    async list(options) {
+        const criteria = options.criteria || {};
         if (!(criteria.all || criteria.name)) {
-            criteria.name = {"$not": /__player__/}
+            criteria.name = {"$not": /__player__/};
         }
         delete criteria.all;
-        this.find(criteria)
-            .sort({name: 1}) // sort by date
+        return await this.find(criteria)
+            .sort({ name: 1 })
             .limit(options.perPage)
-            .skip(options.perPage * options.page)
-            .exec(cb)
+            .skip(options.perPage * options.page);
     }
 }
 
-mongoose.model('Group', GroupSchema)
+export const Group = mongoose.model('Group', GroupSchema); 
+
 

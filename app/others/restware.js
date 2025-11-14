@@ -1,34 +1,26 @@
-'use strict';
 
-var sendSuccess = function (res, msg, data) {
-    if (!res)
-        return;
+export const sendSuccess = (res, msg, data) => {
+    if (!res) return;
 
-    var out = {};
-    out.stat_message = msg;
-    out.data = data;
-    out.success = true;
-
-    res.contentType('json');
-    return res.json(out);
-}
-
-var sendError = function (res, msg, err) {
-    if (!res)
-        return;
-
-    var out = {},
-        errmsg = err ? err.toString() : "";
-    out.stat_message = msg + errmsg;
-    out.success = false;
+    const out = {
+        stat_message: msg,
+        data,
+        success: true
+    };
 
     res.contentType('json');
     return res.json(out);
-}
+};
 
+export const sendError = (res, msg, err) => {
+    if (!res) return;
 
-module.exports = {
-    sendSuccess: sendSuccess,
-    sendError: sendError
-}
+    const errmsg = err ? err.toString() : '';
+    const out = {
+        stat_message: msg + errmsg,
+        success: false
+    };
 
+    res.contentType('json');
+    return res.json(out);
+};
