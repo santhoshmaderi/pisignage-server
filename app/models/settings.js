@@ -23,7 +23,5 @@ const SettingsSchema = new Schema({
 }
 );
 
-SettingsSchema.index({ installation: 1 });
-
 export const Settings = mongoose.model('Settings', SettingsSchema);
 

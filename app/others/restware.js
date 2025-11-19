@@ -17,8 +17,8 @@ export const sendError = (res, msg, err) => {
 
     const errmsg = err ? err.toString() : '';
     const out = {
-        stat_message: msg + errmsg,
-        success: false
+        stat_message: `${msg} ${errmsg}`,
+        success: false;
     };
 
     res.contentType('json');

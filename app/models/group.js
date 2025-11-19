@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 const { Schema } = mongoose;
 
 const GroupSchema = new Schema({
-    name:                   {type: String,index: true},
+    name:                   {type: String, index: true, required: true, minlength: 1},
     description:            String,
 
     playlists:              [],
@@ -81,12 +81,8 @@ const GroupSchema = new Schema({
 }
 );
 
-GroupSchema.index({ name: 1 });
 
 
-GroupSchema.path('name').validate((name) => {
-    return name.length > 0;
-}, 'name cannot be blank');
 
 GroupSchema.statics = {
 
@@ -102,8 +98,10 @@ GroupSchema.statics = {
         delete criteria.all;
         return await this.find(criteria)
             .sort({ name: 1 })
+            .skip(options.perPage * options.page)
             .limit(options.perPage)
-            .skip(options.perPage * options.page);
+            .exec(); 
+
     }
 }
 

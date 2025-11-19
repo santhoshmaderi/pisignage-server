@@ -10,7 +10,7 @@ const PlayerSchema = new Schema({
     TZ:                     String,
     version:                String,
     platform_version:       String,
-    cpuSerialNumber:        {type: String,unique: true, index: true},
+    cpuSerialNumber:        {type: String,unique: true,minlength: 16, maxlength: 16, required: true, index: true},
     myIpAddress:            String,
     ip:                     String,
     location:               String,
@@ -55,9 +55,6 @@ PlayerSchema.index({ ip: 1 });
 
 
 
-PlayerSchema.path('cpuSerialNumber').validate((cpuSerialNumber) => {
-    return cpuSerialNumber.length > 0;
-}, 'cpuSerialNumber cannot be blank');
 
 PlayerSchema.statics = {
     async load(id) {
@@ -68,8 +65,9 @@ PlayerSchema.statics = {
         const criteria = options.criteria || {};
         return await this.find(criteria)
             .sort({name: 1}) // sort by name
+            .skip(options.perPage * options.page)
             .limit(options.perPage)
-            .skip(options.perPage * options.page);
+            .exec(); 
     }
 };
 

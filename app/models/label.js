@@ -5,20 +5,13 @@ const { Schema } = mongoose;
 
 
 const LabelSchema= new Schema({
-    name:                   {type: String,unique: true, index: true},
+    name:                   {type: String,unique: true, index: true, required: true, minlength: 1},
     mode:                   {type: String},
 
     createdAt:              {type: Date, default: Date.now},
     createdBy:              {_id: {type: Schema.ObjectId, ref: 'User'}, name: String}
 }
-)
-
-LabelSchema.index({ name: 1 });
-
-
-LabelSchema.path('name').validate((name) => {
-    return name.length > 0;
-}, 'name cannot be blank');
+);
 
 
 /**
@@ -27,18 +20,18 @@ LabelSchema.path('name').validate((name) => {
 
 LabelSchema.statics = {
     async load(id) {
-        return await this.findOne({ _id: id }).exec();
+        return await this.findById(id);
     },
 
     async list(options) {
         const criteria = options.criteria || {};
-
+    
         return await this.find(criteria)
             .sort({ name: 1 })
-            .limit(options.perPage)
             .skip(options.perPage * options.page)
-            .exec();
+            .limit(options.perPage)
+            .exec();  // ✅ Explicitly returns a Promise
     }
-};
+}; 
 
 export const Label = mongoose.model('Label', LabelSchema);
