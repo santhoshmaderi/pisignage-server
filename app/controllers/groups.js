@@ -344,7 +344,7 @@ export const deleteObject = async (req, res) => {
         return rest.sendError(res,'No group specified or can not remove default group');
     const object = req.object;
     try {
-        await object.deleteOne();
+        await Group.deleteOne({_id: object._id});
         return rest.sendSuccess(res, 'Group record deleted successfully');
     } catch (err) {
         return rest.sendError(res, 'Unable to remove Group record', err);

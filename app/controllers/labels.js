@@ -84,7 +84,7 @@ export const deleteObject = async (req, res) => {
     try {
         const object = req.object;
         
-        await object.deleteOne();
+        await Label.deleteOne({_id: object._id});
         return rest.sendSuccess(res, 'Label deleted successfully');
     } catch (err) {
         return rest.sendError(res, 'Unable to remove Label', err);
