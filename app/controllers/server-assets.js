@@ -13,17 +13,17 @@
 //     rest = require('../others/restware'),
 //     processFile = require('../others/process-file');
 
-import path from 'path';
-import FFmpeg from 'fluent-ffmpeg';
-import probe from 'node-ffprobe';
-import gm from 'gm';
+//import path from 'path';
+// import FFmpeg from 'fluent-ffmpeg';
+//import probe from 'node-ffprobe';
+//import gm from 'gm';
 import fs from 'fs/promises';
 import mongoose from 'mongoose';
 import config from '../../config/config.js';
 import rest from '../others/restware.js';
 import processFile from '../others/process-file.js';
 
-const imageMagick = gm.subClass({ imageMagick: true });
+//const imageMagick = gm.subClass({ imageMagick: true });
 const Asset = mongoose.model('Asset');
 
 
