@@ -1,60 +1,116 @@
-'use strict;'
+//'use strict;'
 
-var fs = require('fs'),
+/* var fs = require('fs'),
 	path = require('path'),
 	async = require('async'),
     exec = require('child_process').exec,
     _ = require('lodash');
+    */
 
-var serverIp = require('ip').address();
+import fs from 'fs/promises';
+import path from 'path';
+import { exec } from 'child_process';
+import mongoose from 'mongoose';
+import config from '../../config/config.js';
+import rest from '../others/restware.js';
+import ip from 'ip';
 
-var	config = require('../../config/config'),
-	rest = require('../others/restware');
 
-var mongoose = require('mongoose'),
-    Settings = mongoose.model('Settings'),
-    settingsModel = null;
+const serverIp = ip.address();
+const Settings = mongoose.model('Settings');
 
-var licenseDir = config.licenseDirPath
+let settingsModel = null;
 
-var getTxtFiles = function(cb){
-    var txtOnly;
-    fs.readdir(licenseDir,function(err,files){
-        if(err)
-            return cb(err,null);
-        txtOnly = files.filter(function(file){
-            return file.match(/\.txt$/i)  // remove dot, hidden system files
-        });
-        cb(null,txtOnly);
-    })
-}
+let licenseDir = config.licenseDirPath;
 
-exports.index = function(req,res){
+//var	config = require('../../config/config'),
+//	rest = require('../others/restware');
 
-    getTxtFiles(function(err,files){
-        if(err)
-            return rest.sendError(res,'error in reading license directory',err);
+//var mongoose = require('mongoose'),
+  //  Settings = mongoose.model('Settings'),
+  //  settingsModel = null;
 
-        return rest.sendSuccess(res,'total license list ',files);
-    })
+//var licenseDir = config.licenseDirPath
+
+// var getTxtFiles = function(cb){
+//     var txtOnly;
+//     fs.readdir(licenseDir,function(err,files){
+//         if(err)
+//             return cb(err,null);
+//         txtOnly = files.filter(function(file){
+//             return file.match(/\.txt$/i)  // remove dot, hidden system files
+//         });
+//         cb(null,txtOnly);
+//     })
+// }
+
+const getTxtFiles = async () => {
+    try {
+        const files = await fs.readdir(licenseDir);
+        const txtOnly = files.filter(file => /\.txt$/i.test(file));
+        return txtOnly;
+    } catch (err) {
+        throw err;
+    }
 };
 
-exports.saveLicense = function(req,res){ // save license files
-	var uploadedFiles = req.files["assets"],
-		savedFiles = [];
-		
-	async.each(uploadedFiles,function(file,callback){
-		fs.rename(file.path,path.join(licenseDir, file.originalname),function(err){
-			if(err)
-				return callback(err);
-			savedFiles.push({name: file.originalname , size: file.size});
-			callback();
-		});
-	},function(err){
-		if(err)
-			return rest.sendError(res,'Error in saving license ',err);
-		return rest.sendSuccess(res,'License saved successfuly',savedFiles);
-	})
+// exports.index = function(req,res){
+// 
+//     getTxtFiles(function(err,files){
+//         if(err)
+//             return rest.sendError(res,'error in reading license directory',err);
+// 
+//         return rest.sendSuccess(res,'total license list ',files);
+//     })
+// };
+
+export const index = async (req, res) => {
+    try {
+        const files = await getTxtFiles();
+        return rest.sendSuccess(res, 'total license list', files);
+    } catch (err) {
+        return rest.sendError(res, 'error in reading license directory', err);
+    }
+};
+
+//exports.saveLicense = function(req,res){ // save license files
+//	var uploadedFiles = req.files["assets"],
+//		savedFiles = [];
+//		
+//	async.each(uploadedFiles,function(file,callback){
+//		fs.rename(file.path,path.join(licenseDir, file.originalname),function(err){
+//			if(err)
+//				return callback(err);
+//			savedFiles.push({name: file.originalname , size: file.size});
+//			callback();
+//		});
+//	},function(err){
+//		if(err)
+//			return rest.sendError(res,'Error in saving license ',err);
+//		return rest.sendSuccess(res,'License saved successfuly',savedFiles);
+//	})
+//};
+
+export const saveLicense = async (req, res) => {
+    try {
+        const uploadedFiles = req.files["assets"];
+        const savedFiles = [];
+        
+        // Process each file sequentially
+        for (const file of uploadedFiles) {
+            try {
+                await fs.rename(file.path, path.join(licenseDir, file.originalname));
+                savedFiles.push({ name: file.originalname, size: file.size });
+            } catch (err) {
+                return rest.sendError(res, 'Error in saving license', err);
+            }
+        }
+        
+        return rest.sendSuccess(res, 'License saved successfully', savedFiles);
+        
+    } catch (err) {
+        return rest.sendError(res, 'Error processing license files', err);
+    }
 };
 
 
