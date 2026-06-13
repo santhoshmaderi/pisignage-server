@@ -97,6 +97,7 @@ const io = oldSocketio.listen(server, { 'destroy upgrade': false });
 const ioNew = new SocketIOServer(server, {
     path: '/newsocket.io',
     serveClient: true,
+    allowEIO3: true,   // accept legacy Engine.IO v3 clients (socket.io-client 2.x player firmware); v4 rejects them by default
     // below are engine.IO options
     pingInterval: 45000,
     pingTimeout: 45000,
@@ -107,6 +108,7 @@ const ioNew = new SocketIOServer(server, {
 const ioNewWebsocketOnly = new SocketIOServer(server, {
     path: "/wssocket.io",
     serveClient: true,
+    allowEIO3: true,   // accept legacy Engine.IO v3 clients (socket.io-client 2.x player firmware); v4 rejects them by default
     // below are engine.IO options
     pingInterval: 45000,
     pingTimeout: 180000,
