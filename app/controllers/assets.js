@@ -176,7 +176,6 @@ export const getFileType = (file) => {
         { pattern: config.pdffileRegex, type: 'pdf' },
         { pattern: config.txtFileRegex, type: 'text' },
         { pattern: config.radioFileRegex, type: 'radio' },
-        { pattern: config.gcalRegex, type: 'gcal' },
         { pattern: config.zipfileRegex, type: 'zip' },
         { pattern: config.repofileRegex, type: 'repo' },
         { pattern: config.localFolderRegex, type: 'local' }
