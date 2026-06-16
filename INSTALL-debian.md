@@ -1,12 +1,5 @@
 # Installing pisignage-server (open-source) on Debian
 
-Branch: **`es6-mongodb8`** · Node **20 LTS** · MongoDB **8.0** · serves the v2 React UI at `/`.
-
-Tested on Debian 13 "trixie" (x86_64), Node v20.20.2, MongoDB 8.0.26. Run as a
-normal user (`pi`) with `sudo`; do **not** run the server itself as root.
-
----
-
 ## 1. System packages
 ```bash
 sudo apt-get update
