@@ -83,12 +83,7 @@ mkdir -p ../media          # → ~/pisignage/media
 ## 6. Install dependencies
 ```bash
 npm install
-npm audit fix              # optional: clears the easily-fixable advisories
-```
-- `npm warn deprecated gm@…` and `fluent-ffmpeg@…` are expected — harmless.
-- A few advisories remain in the legacy `919.socket.io` chain (`uglify-js`,
-  `xmlhttprequest`, old `ws`) that's kept for old players. **Don't** run
-  `npm audit fix --force` — it would break that legacy socket path.
+
 
 ## 7. Run the server
 
@@ -115,51 +110,3 @@ Open the firewall if needed: `sudo ufw allow 3000`.
 - REST API: `http://<server-ip>:3000/api/...` (HTTP Basic auth).
 
 ---
-
-## Troubleshooting
-
-**`Error: Command failed: convert -version` / "install imagemagick".**
-Install ImageMagick (step 1): `sudo apt-get install -y imagemagick`. This is the
-`convert` binary. It's non-fatal — the server still starts, but image thumbnails
-won't generate until it's present. (If your Debian ships ImageMagick 7 without a
-`convert` symlink, install the compatibility binary or `sudo ln -s $(which magick) /usr/local/bin/convert`.)
-
-**`setlocale: LC_CTYPE: cannot change locale (UTF-8)`.**
-Harmless warning. To silence:
-```bash
-sudo apt-get install -y locales
-sudo sed -i 's/# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen
-sudo locale-gen
-echo 'export LANG=en_US.UTF-8' >> ~/.bashrc
-```
-
-**On startup it downloads `piimageX.Y.Z.zip` from pisignage.com.**
-Expected — the server syncs player firmware/release images into `data/releases`
-so players can self-update. It needs internet and some disk; it only runs when a
-newer release is published. To run fully offline, block/ignore those downloads.
-
-**"After update if you do not see your groups, change the uri … pisignage-dev".**
-A legacy hint. By default (no `NODE_ENV`) the server uses DB `pisignage-server-dev`;
-with `NODE_ENV=production` it uses `pisignage-server-prod`. Pick one consistently
-so you don't "lose" data between dev/prod DBs.
-
-**Don't run as root.** Run under the `pi` (or a dedicated) user; pm2/systemd
-manages start-on-boot.
-
----
-
-## Quick reference — everything in order
-```bash
-sudo apt-get update
-sudo apt-get install -y git curl build-essential ffmpeg imagemagick
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs
-# MongoDB — trusted repo (works on Debian 13/trixie; on Debian 11/12 & Ubuntu the signed key in step 3 also works)
-echo "deb [ arch=amd64,arm64 trusted=yes ] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/8.0 main" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
-sudo apt-get update && sudo apt-get install -y mongodb-org
-sudo systemctl enable --now mongod
-mkdir -p ~/pisignage && cd ~/pisignage
-git clone -b es6-mongodb8 https://github.com/santhoshmaderi/pisignage-server.git
-cd pisignage-server && mkdir -p ../media && npm install && npm audit fix
-NODE_ENV=production PORT=3000 node server.js     # or pm2 (see step 7)
-# → http://<server-ip>:3000/  (login pi / pi)
-```
