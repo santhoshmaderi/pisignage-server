@@ -5,10 +5,7 @@
 sudo apt-get update
 sudo apt-get install -y git curl build-essential ffmpeg imagemagick
 ```
-- **ffmpeg** — video probe/transcode/thumbnails.
-- **imagemagick** — provides the `convert` binary the server calls for image
-  thumbnails (the code uses `gm.subClass({ imageMagick: true })`). Installing
-  *graphicsmagick* alone is **not** enough — you'll still get `convert: not found`.
+
 
 ## 2. Node.js 20 LTS (NodeSource)
 ```bash
@@ -76,7 +73,7 @@ mkdir -p ../media          # → ~/pisignage/media
 ## 6. Install dependencies
 ```bash
 npm install
-
+```
 
 ## 7. Run the server
 
