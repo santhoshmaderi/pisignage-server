@@ -10,11 +10,10 @@
 #   Ubuntu 20.04/22.04/24.04 (focal / jammy / noble)
 #   RHEL family 8/9 (Rocky, AlmaLinux, CentOS Stream)
 #
-# Service account is chosen automatically:
-#   * Run as root            -> creates a dedicated 'pisignage' user, installs
-#                               under /home/pisignage, app runs as 'pisignage'.
-#   * Run by a sudo user     -> installs under that user's home, app runs as
-#                               that user; no new account is created.
+# Service account: defaults to a dedicated 'pisignage' user (created if it
+# doesn't exist), installed under /home/pisignage and run as that user —
+# regardless of who runs the playbook. Override with -e app_user=<name> to
+# install under an existing account instead.
 #
 # RUN IT (no inventory needed — it targets this machine):
 #   As a normal user with sudo:   ansible-playbook pisignage-install.yml -K
@@ -38,15 +37,10 @@
 
   vars:
     # --- Who/where -----------------------------------------------------------
-    # Service account selection:
-    #   * Run as root          -> we create a dedicated 'pisignage' user and
-    #                             install under /home/pisignage.
-    #   * Run by a sudo user   -> we install under THAT user and do NOT create
-    #                             a new account.
-    # Detected from the controller's environment (SUDO_USER if they used sudo,
-    # otherwise USER). Override explicitly any time with -e app_user=<name>.
-    _invoking_user: "{{ lookup('env', 'SUDO_USER') | default('', true) or lookup('env', 'USER') | default('', true) }}"
-    app_user: "{{ 'pisignage' if (_invoking_user in ['', 'root']) else _invoking_user }}"
+    # Dedicated service account the app runs as. Always defaults to 'pisignage'
+    # (created if missing) no matter who runs the playbook. Override to install
+    # under an existing account with -e app_user=<name>.
+    app_user: pisignage
     install_dir: "/home/{{ app_user }}"
     repo_url: "https://github.com/santhoshmaderi/pisignage-server.git"
     repo_branch: "es6-mongodb8"
@@ -96,6 +90,21 @@
     # =========================================================================
     # 1. System packages — Debian / Ubuntu
     # =========================================================================
+    # Clear any stale/half-written NodeSource repo + key from a previous run
+    # FIRST — otherwise the base-package `apt update` below would itself fail on
+    # the leftover bad-signature repo ("Missing key …") before we can fix it.
+    - name: "[Debian] Remove stale NodeSource/MongoDB repos & keys"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/sources.list.d/nodesource.list
+        - /etc/apt/sources.list.d/nodesource.sources
+        - /usr/share/keyrings/nodesource.gpg
+        - "/etc/apt/sources.list.d/mongodb-org-{{ mongo_version }}.list"
+        - "/usr/share/keyrings/mongodb-server-{{ mongo_version }}.gpg"
+      when: ansible_facts['os_family'] == 'Debian'
+
     - name: "[Debian] Install base packages"
       ansible.builtin.apt:
         name:
@@ -112,46 +121,21 @@
         cache_valid_time: 3600
       when: ansible_facts['os_family'] == 'Debian'
 
-    - name: "[Debian] Add NodeSource signing key"
-      ansible.builtin.get_url:
-        url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
-        dest: /tmp/nodesource.gpg.key
-        mode: "0644"
+    # NodeSource's official setup script installs the key + repo correctly across
+    # Debian/Ubuntu releases, including trixie's stricter `sqv` signature checks.
+    - name: "[Debian] Add NodeSource repo (official setup script)"
+      ansible.builtin.shell: "curl -fsSL https://deb.nodesource.com/setup_{{ node_major }}.x | bash -"
       when: ansible_facts['os_family'] == 'Debian'
 
-    - name: "[Debian] Install NodeSource key into keyring"
-      ansible.builtin.shell: >-
-        gpg --dearmor --yes -o /usr/share/keyrings/nodesource.gpg /tmp/nodesource.gpg.key
-      args:
-        creates: /usr/share/keyrings/nodesource.gpg
-      when: ansible_facts['os_family'] == 'Debian'
-
-    - name: "[Debian] Add NodeSource apt repo"
-      ansible.builtin.apt_repository:
-        repo: "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_{{ node_major }}.x nodistro main"
-        filename: nodesource
-        state: present
-      when: ansible_facts['os_family'] == 'Debian'
-
-    - name: "[Debian] Add MongoDB signing key"
-      ansible.builtin.get_url:
-        url: "https://pgp.mongodb.com/server-{{ mongo_version }}.asc"
-        dest: "/tmp/mongodb-server-{{ mongo_version }}.asc"
-        mode: "0644"
-      when: ansible_facts['os_family'] == 'Debian'
-
-    - name: "[Debian] Install MongoDB key into keyring"
-      ansible.builtin.shell: >-
-        gpg --dearmor --yes -o /usr/share/keyrings/mongodb-server-{{ mongo_version }}.gpg
-        /tmp/mongodb-server-{{ mongo_version }}.asc
-      args:
-        creates: "/usr/share/keyrings/mongodb-server-{{ mongo_version }}.gpg"
-      when: ansible_facts['os_family'] == 'Debian'
-
+    # Debian 13 (trixie) ships apt's Sequoia verifier (sqv), which rejects
+    # MongoDB's repo signing key (its self-signature uses an algorithm sqv
+    # refuses) → "Missing key …". MongoDB publishes no trixie/sqv-compatible key
+    # yet, so trust this one repo: transport is still HTTPS (repo.mongodb.org);
+    # only the OpenPGP repo-signature check is skipped.
     - name: "[Debian] Add MongoDB apt repo"
       ansible.builtin.apt_repository:
         repo: >-
-          deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-{{ mongo_version }}.gpg ]
+          deb [ arch=amd64,arm64 trusted=yes ]
           https://repo.mongodb.org/apt/{{ mongo_apt_path }} {{ mongo_apt_codename }}/mongodb-org/{{ mongo_version }} {{ mongo_apt_component }}
         filename: "mongodb-org-{{ mongo_version }}"
         state: present
@@ -239,14 +223,14 @@
     # =========================================================================
     # 3. Application user & directories
     # =========================================================================
-    # Only provision the dedicated account (root-run case). When a sudo user
-    # runs this, app_user is their own existing account — we don't touch it.
-    - name: Ensure the pisignage service user exists
+    # Ensure the service account exists (idempotent — harmless for an existing
+    # account). Skipped only when targeting root explicitly.
+    - name: Ensure the service user exists
       ansible.builtin.user:
         name: "{{ app_user }}"
         shell: /bin/bash
         create_home: true
-      when: app_user == 'pisignage'
+      when: app_user != 'root'
 
     - name: Create install directories
       ansible.builtin.file:
@@ -258,6 +242,9 @@
       loop:
         - "{{ install_dir }}"
         - "{{ media_dir }}"
+        # Pre-create the per-user Ansible tmp dir so the become_user tasks below
+        # don't emit the harmless "remote_tmp did not exist" warning.
+        - "{{ install_dir }}/.ansible/tmp"
 
     # =========================================================================
     # 4. Clone & build the app (as the application user)

@@ -25,24 +25,43 @@ node -v        # v20.x
 ```
 
 ## 3. MongoDB 8.0
+
+**Debian 11/12 (bullseye/bookworm) & Ubuntu** — use the signed key:
 ```bash
 sudo apt-get install -y gnupg curl
 curl -fsSL https://pgp.mongodb.com/server-8.0.asc | \
   sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
 
+# Debian 11/12:
 echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/8.0 main" \
   | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+# Ubuntu 22.04/24.04 instead:
+# echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
 
-sudo apt-get update
-sudo apt-get install -y mongodb-org
+sudo apt-get update && sudo apt-get install -y mongodb-org
+```
 
+**Debian 13 (trixie)** — apt's new Sequoia verifier (`sqv`) rejects MongoDB's
+repo key (`Missing key …, the repository is not signed`). MongoDB has no
+trixie-compatible key yet, so trust the repo over HTTPS instead of `signed-by`:
+```bash
+echo "deb [ arch=amd64,arm64 trusted=yes ] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/8.0 main" \
+  | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+
+sudo apt-get update && sudo apt-get install -y mongodb-org
+```
+> `trusted=yes` skips only the OpenPGP repo-signature check; the download is
+> still over HTTPS. It's the current workaround for MongoDB 8.0 on the
+> just-released Debian 13 (officially unsupported — we use the **bookworm**
+> packages, which run fine on trixie).
+
+**Both** — start the service and verify:
+```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now mongod
 sudo systemctl status mongod      # active (running)
 mongod --version                  # db version v8.0.x
 ```
-> On Debian 13 (trixie) use the **bookworm** repo line above — MongoDB doesn't
-> publish a trixie repo yet, and the bookworm packages run fine on trixie.
 > The server connects to `mongodb://127.0.0.1:27017` (no auth) and creates the
 > DB automatically on first run.
 
@@ -134,8 +153,8 @@ manages start-on-boot.
 sudo apt-get update
 sudo apt-get install -y git curl build-essential ffmpeg imagemagick
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs
-curl -fsSL https://pgp.mongodb.com/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
-echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/8.0 main" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+# MongoDB — trusted repo (works on Debian 13/trixie; on Debian 11/12 & Ubuntu the signed key in step 3 also works)
+echo "deb [ arch=amd64,arm64 trusted=yes ] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/8.0 main" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
 sudo apt-get update && sudo apt-get install -y mongodb-org
 sudo systemctl enable --now mongod
 mkdir -p ~/pisignage && cd ~/pisignage
