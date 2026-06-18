@@ -27,6 +27,10 @@
 # Requires Ansible on this machine:
 #   Debian/Ubuntu: sudo apt-get install -y ansible
 #   RHEL family:   sudo dnf install -y ansible-core
+#
+# If you hit "Ansible requires the locale encoding to be UTF-8", your shell
+# locale isn't UTF-8 — prefix the command (C.UTF-8 is always available):
+#   LANG=C.UTF-8 LC_ALL=C.UTF-8 ansible-playbook pisignage-install.yml
 # =============================================================================
 
 - name: Install and run pisignage-server
