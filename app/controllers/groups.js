@@ -84,7 +84,10 @@ export const index = async (req, res) => {
         const criteria = {};
         
         if (req.query['string']) {
-            criteria['name'] = new RegExp(req.query['string'], "i");
+            // Escape regex metacharacters so the query is a literal substring
+            // match — prevents regex injection / ReDoS from user input.
+            const escaped = req.query['string'].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            criteria['name'] = new RegExp(escaped, "i");
         }
         
         if (req.query['all']) {
