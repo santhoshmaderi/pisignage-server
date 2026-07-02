@@ -12,6 +12,7 @@ import * as groups from '../app/controllers/groups.js';
 import * as labels from '../app/controllers/labels.js';
 import * as rssFeed from '../app/controllers/rss-feed.js';
 import * as licenses from '../app/controllers/licenses.js';
+import * as assistant from '../app/controllers/assistant.js';
 
 // Configure multer upload
 const upload = multer({ dest: config.uploadDir });
@@ -102,6 +103,10 @@ export default () => {
 
     router.get('/api/licensefiles', licenses.index);
     router.delete('/api/licensefiles/:filename', licenses.deleteLicense);
+
+    // AI assistant route (read-only chat over players/groups/assets/playlists)
+    router.post('/api/assistant/chat', assistant.chat);
+    router.post('/api/assistant/chat/stream', assistant.chatStream);
 
     // Settings routes
     router.get('/api/settings', licenses.getSettings);

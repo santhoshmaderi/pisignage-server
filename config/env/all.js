@@ -51,5 +51,21 @@ export default {
     radioFileRegex:         /\.radio$/i,
     brandRegex:             /^(brand_intro|brand_intro_portrait)\./i,
     nestedPlaylist:         /^__/i,
-    systemAssets: ["_system_notice.html"]
+    systemAssets: ["_system_notice.html"],
+
+    // AI assistant (chat) — talks to a local Ollama instance for tool-calling.
+    // All overridable via environment so the model can be swapped without code
+    // changes (kept model-agnostic on purpose).
+    assistant: {
+        ollamaUrl:         process.env.OLLAMA_URL   || 'http://localhost:11434',
+        model:             process.env.OLLAMA_MODEL || 'qwen2.5:3b',
+        // Upper bound on the tool-call/answer loop so a confused small model
+        // can't spin forever.
+        maxToolIterations: parseInt(process.env.OLLAMA_MAX_ITER || '5', 10),
+        // Per-request timeout for a single Ollama call (CPU inference is slow).
+        requestTimeoutMs:  parseInt(process.env.OLLAMA_TIMEOUT_MS || '120000', 10),
+        // Directory of .md/.txt help/troubleshooting articles searched by the
+        // search_help_docs tool (simple keyword scoring — no embeddings needed).
+        helpDocsDir:       path.join(dataDir, 'help-docs')
+    }
 };
