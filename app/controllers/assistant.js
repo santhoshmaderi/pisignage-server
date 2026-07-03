@@ -83,6 +83,18 @@ const msAgo = (date) => {
     return Date.now() - d.getTime();
 };
 
+// Human, ICU-independent absolute timestamp, e.g. "Jul 2, 2026 · 1:13 PM UTC".
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const formatWhen = (v) => {
+    const d = toDate(v);
+    if (!d) return null;
+    let h = d.getUTCHours();
+    const min = String(d.getUTCMinutes()).padStart(2, '0');
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()} · ${h}:${min} ${ampm} UTC`;
+};
+
 const humanizeAgo = (date) => {
     const ms = msAgo(date);
     if (ms === null) return 'never';
@@ -101,7 +113,7 @@ const playerView = (p) => ({
     group: p.group && p.group.name,
     online: !!p.isConnected,
     currentPlaylist: p.currentPlaylist || null,
-    lastReported: toDate(p.lastReported)?.toISOString() || null,
+    lastReported: formatWhen(p.lastReported),
     lastReportedAgo: humanizeAgo(p.lastReported),
     syncInProgress: !!p.syncInProgress,
     ipAddress: p.myIpAddress || p.ip || null,
@@ -114,7 +126,7 @@ const playerView = (p) => ({
 const groupView = (g) => ({
     name: g.name,
     description: g.description || null,
-    lastDeployed: toDate(g.lastDeployed)?.toISOString() || null,
+    lastDeployed: formatWhen(g.lastDeployed),
     lastDeployedAgo: toDate(g.lastDeployed) ? humanizeAgo(g.lastDeployed) : 'never deployed',
     assignedPlaylists: (g.playlists || []).map((pl) =>
         typeof pl === 'string' ? pl : pl && pl.name
@@ -343,6 +355,58 @@ async function getPlayerAssets({ playerName }) {
         assetCount: resolved.assets.length,
         assets: resolved.assets,
         byPlaylist: resolved.byPlaylist
+    };
+}
+
+// Contents of a specific named playlist: the ordered assets it plays, with
+// duration, zone placement and media type. Reads the __<name>.json directly.
+async function getPlaylistAssets({ playlistName }) {
+    if (!playlistName) return { error: 'playlistName is required' };
+    let files = [];
+    try {
+        files = await fs.readdir(config.mediaDir);
+    } catch (e) {
+        return { error: `Could not read media directory: ${e.message}` };
+    }
+    const plFiles = files.filter((f) => f.startsWith('__') && f.endsWith('.json'));
+    const nameOf = (f) => f.slice(2, -5);
+    const q = playlistName.toLowerCase();
+    const match =
+        plFiles.find((f) => nameOf(f).toLowerCase() === q) ||
+        plFiles.find((f) => nameOf(f).toLowerCase().includes(q));
+    if (!match) return { error: `No playlist matching "${playlistName}"` };
+
+    let obj;
+    try {
+        obj = JSON.parse(await fs.readFile(path.join(config.mediaDir, match), 'utf8'));
+    } catch (e) {
+        return { error: `Could not read playlist: ${e.message}` };
+    }
+
+    let meta = new Map();
+    try {
+        const db = await Asset.find({}).lean().exec();
+        meta = new Map(db.map((d) => [d.name, d.type]));
+    } catch {
+        /* type optional */
+    }
+
+    const assets = (obj.assets || [])
+        .filter((a) => a && a.filename)
+        .map((a) => ({
+            filename: a.filename,
+            type: meta.get(a.filename) || null,
+            duration: a.duration ?? null,
+            fullscreen: !!a.fullscreen,
+            side: a.side || null,
+            bottom: a.bottom || null
+        }));
+
+    return {
+        playlist: nameOf(match),
+        layout: obj.layout || null,
+        assetCount: assets.length,
+        assets
     };
 }
 
@@ -605,11 +669,28 @@ const TOOLS = [
             type: 'function',
             function: {
                 name: 'list_playlists',
-                description: 'List the names of all playlists on the server.',
+                description:
+                    'List the NAMES of all playlists on the server (names only, no contents). To see what is inside a specific playlist, use get_playlist_assets instead.',
                 parameters: { type: 'object', properties: {} }
             }
         },
         run: listPlaylists
+    },
+    {
+        def: {
+            type: 'function',
+            function: {
+                name: 'get_playlist_assets',
+                description:
+                    'List the CONTENTS of one specific named playlist — the actual media files it plays, in order, with duration, zone and type. Use this whenever the user asks what is in / inside / the contents of a playlist. Never make up filenames; always call this.',
+                parameters: {
+                    type: 'object',
+                    properties: { playlistName: { type: 'string', description: 'Playlist name (partial ok)' } },
+                    required: ['playlistName']
+                }
+            }
+        },
+        run: getPlaylistAssets
     },
     {
         def: {
