@@ -1,7 +1,7 @@
 # License issue with open-source server ("powered by pisignage.com")
 
 Source: https://help.pisignage.com/hc/en-us/articles/360001256851-This-player-is-powered-by-pisignage-com
-Keywords: license, licence, licensing, powered by pisignage, player is powered, activation, open source, player only, installation, username
+Keywords: license, licence, licensing, powered by pisignage, player is powered
 
 If a player shows a licensing problem — for example the "This player is powered by pisignage.com" ticker — check the points below.
 

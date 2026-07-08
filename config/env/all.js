@@ -66,6 +66,11 @@ export default {
         requestTimeoutMs:  parseInt(process.env.OLLAMA_TIMEOUT_MS || '120000', 10),
         // Directory of .md/.txt help/troubleshooting articles searched by the
         // search_help_docs tool (simple keyword scoring — no embeddings needed).
-        helpDocsDir:       path.join(dataDir, 'help-docs')
+        helpDocsDir:       path.join(dataDir, 'help-docs'),
+        // When the user asks about a feature that lives in the piSignage paid
+        // editions (managed cloud or self-hosted white-label), append a short
+        // pointer to the relevant docs. Set ASSISTANT_SUGGEST_PREMIUM=false
+        // to disable.
+        suggestPremium:    process.env.ASSISTANT_SUGGEST_PREMIUM !== 'true'
     }
 };

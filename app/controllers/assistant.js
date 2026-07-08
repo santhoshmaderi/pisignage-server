@@ -48,6 +48,13 @@ Rules:
 - You may still call search_help_docs to look up a DIFFERENT topic than what was retrieved, using only symptom/topic words (never player/group names).
 - NEVER mention tool names, function names, or internal mechanics to the user (never write "list_players", "search_help_docs", "get_group", etc.). Speak like a human support engineer. Call tools silently; the user only sees your final answer.
 - Be concise. Prefer short numbered steps over long prose. Report times in a human-friendly way.
+- Formatting: wrap every file name, asset name, playlist name and group name in backticks (e.g. \`image2.jpg\`, \`Test\`) so they render as distinct chips. When listing a playlist's or player's assets, use a numbered or bulleted list with the file name first, then its details (type, duration, zone) after a dash — keep each item on one line.
+- Try to answer from the documentation provided below first. If the docs don't cover it, and not simple common clarifications, say "I don't have documentation on that" and suggest
+  contacting support@pisignage.com.
+- Be concise: 2-5 sentences for simple questions, steps for procedures.
+- Always cite the source: [Article title](url). For video sources, link the timestamp.
+- If the user's problem suggests a common mistake (e.g. duration in ms vs seconds), point it out proactively.
+- Ask ONE clarifying question if the request is ambiguous.
 - This assistant is READ-ONLY: you cannot deploy, delete or change anything. If asked to, explain that write actions aren't enabled yet.`;
 
 /* --------------------------------------------------------------------------
@@ -263,9 +270,13 @@ async function playlistMediaFiles(plName, visited = new Set()) {
     } catch {
         return [];
     }
+    // side/bottom zones only exist in multi-zone layouts. Layout "1" (or unset)
+    // is a single fullscreen zone, so ignore any leftover side/bottom values.
+    const multiZone = obj.layout && obj.layout !== '1';
+    const keys = multiZone ? ['filename', 'side', 'bottom'] : ['filename'];
     const out = [];
     for (const a of obj.assets || []) {
-        for (const key of ['filename', 'side', 'bottom']) {
+        for (const key of keys) {
             const val = a[key];
             if (!val || typeof val !== 'string') continue;
             if (val.startsWith('__')) {
@@ -391,20 +402,29 @@ async function getPlaylistAssets({ playlistName }) {
         /* type optional */
     }
 
+    // Only report side/bottom zones for genuinely multi-zone layouts; layout "1"
+    // (or unset) is single fullscreen, so leftover side/bottom values are ignored.
+    const multiZone = obj.layout && obj.layout !== '1';
     const assets = (obj.assets || [])
         .filter((a) => a && a.filename)
-        .map((a) => ({
-            filename: a.filename,
-            type: meta.get(a.filename) || null,
-            duration: a.duration ?? null,
-            fullscreen: !!a.fullscreen,
-            side: a.side || null,
-            bottom: a.bottom || null
-        }));
+        .map((a) => {
+            const item = {
+                filename: a.filename,
+                type: meta.get(a.filename) || null,
+                duration: a.duration ?? null,
+                fullscreen: !!a.fullscreen
+            };
+            if (multiZone) {
+                item.side = a.side || null;
+                item.bottom = a.bottom || null;
+            }
+            return item;
+        });
 
     return {
         playlist: nameOf(match),
-        layout: obj.layout || null,
+        layout: obj.layout || '1',
+        multiZone: !!multiZone,
         assetCount: assets.length,
         assets
     };
@@ -526,15 +546,13 @@ async function searchHelpDocs({ query, limit = 3 }) {
         const finalScore = (score * (1 + termsMatched)) / lengthDamp;
         scored.push({ file, score: finalScore, text, isMacro: file.startsWith('macro-') });
     }
-    // Rank macros (curated quick answers) ahead of full articles, each group by
-    // relevance. Both are already relevance-gated (score > 0), so an unrelated
-    // macro never surfaces — but when a macro IS relevant it comes first.
-    // Rank scored hits: macros (curated quick answers) first, then articles.
-    scored.sort((a, b) => b.score - a.score);
-    const ordered = [
-        ...scored.filter((s) => s.isMacro),
-        ...scored.filter((s) => !s.isMacro)
-    ];
+    // Rank by relevance first; only when scores tie do we prefer the curated
+    // macro (quick answer) over a full article. Previously macros were forced
+    // ahead of ALL articles regardless of score, so a weakly-matching macro
+    // (e.g. the license macro catching the word "server") could outrank a
+    // strongly-matching article and get injected/cited on unrelated answers.
+    scored.sort((a, b) => b.score - a.score || (b.isMacro === true) - (a.isMacro === true));
+    const ordered = scored;
 
     const results = [];
     const seen = new Set();
@@ -862,6 +880,71 @@ const HELP_RE =
 const STATUS_RE =
     /\b(list|show|display|which|how many|count|status|online|offline|connected|disconnected|deployed|last deploy|currently|current playlist|running|assigned|when was|asset|assets|content|contents|media|playlist|playlists|group|groups)\b/i;
 
+// Write-action guard. The assistant is READ-ONLY, so any imperative request to
+// change the system is refused in CODE (not left to the model, which will
+// happily claim "I'll deploy it"). Verbs use word boundaries so "deployed" /
+// "assigned" (read/state) don't match "deploy" / "assign" (command).
+const WRITE_INTENT_RE =
+    /\b(deploy|redeploy|un-?deploy|delete|remove|reboot|restart|shutdown|power (on|off)|turn (on|off)|rename|reassign|assign|push|upload|set (the )?playlist|change (the )?playlist|add (an? )?asset)\b/i;
+// If the user is clearly ASKING (how/what/why/can I…) it's a how-to question,
+// not a command — let the normal docs flow answer it.
+const QUESTION_HINT_RE =
+    /\b(how|what|why|when|where|which|can i|could i|is it|are they|does|do i|should i|explain|tell me|guide|steps?)\b/i;
+
+const isWriteCommand = (msg) =>
+    WRITE_INTENT_RE.test(msg) && !QUESTION_HINT_RE.test(msg);
+
+const READONLY_REFUSAL =
+    "I'm a **read-only** assistant, so I can't deploy, delete, or change anything — I can only show status and help you troubleshoot.\n\n" +
+    'To deploy a playlist, open the group in the **Groups** screen and click **Deploy**.';
+
+// ── Premium-edition feature pointers ──────────────────────────────────────
+// When the user asks about a capability that lives in the piSignage paid
+// editions (managed cloud or self-hosted white-label) rather than the
+// open-source server, the model answers what it can and we append a short,
+// non-hallucinated pointer with a REAL link. First match wins. Toggle with
+// ASSISTANT_SUGGEST_PREMIUM=false.
+const PREMIUM_FEATURE_RULES = [
+    {
+        feature: 'Reporting & Power BI',
+        pattern: /\b(power\s?bi|reporting|reports?|analytics|proof of play|audit trail)\b/i,
+        url: 'https://help.pisignage.com/hc/en-us/articles/58058827745049-Showing-a-Power-BI-report-on-your-screens'
+    },
+    {
+        feature: 'Team & access control',
+        pattern: /\b(user management|collaborators?|multiple users|multi[-\s]?user|add (a |another )?user|roles?|permissions?|access control|sso|saml|single sign)\b/i,
+        url: 'https://help.pisignage.com/hc/en-us/articles/360001413451-Adding-collaborators-other-users-to-manage-your-account'
+    },
+    {
+        feature: 'Template library',
+        pattern: /\b(templates?|template library|template marketplace|design (a )?layout|layout library)\b/i,
+        url: 'https://pisignage.com/templates'
+    },
+    {
+        feature: 'App store & integrations',
+        pattern: /\b(app\s?store|plug-?ins?|widgets?|integrations?|marketplace)\b/i,
+        url: 'https://pisignage.com'
+    },
+    {
+        feature: 'White-label & branding',
+        pattern: /\b(white[-\s]?label|branding|custom domain|resellers?|partners?)\b/i,
+        url: 'https://pisignage.com/partners'
+    }
+];
+
+const premiumFeatureFor = (msg) =>
+    (typeof msg === 'string' && PREMIUM_FEATURE_RULES.find((r) => r.pattern.test(msg))) ||
+    null;
+
+// Leading banner shown BEFORE the answer so the paid-edition framing comes
+// first (not buried under how-to steps). Real link only — never fabricated.
+const premiumFeatureBanner = (msg) => {
+    if (!A.suggestPremium) return '';
+    const rule = premiumFeatureFor(msg);
+    if (!rule) return '';
+    return `💎 **${rule.feature}** isn't part of the open-source server — it's available in piSignage's paid editions (managed cloud or self-hosted white-label). [See what's included ↗](${rule.url})\n\n---\n\n`;
+};
+
 // Returns { toolDefs, injectHelp } for the turn.
 function classifyTurn(message) {
     // A pinned topic (e.g. licensing) always forces a docs-first answer,
@@ -895,6 +978,18 @@ async function buildMessages(message, history) {
         const help = await retrieveHelpContext(message);
         if (help.context) msgs.push({ role: 'system', content: help.context });
         sources = help.sources;
+    }
+    // If the question is about a paid-edition feature, tell the model to frame
+    // it that way rather than implying the open-source server supports it.
+    const premium = A.suggestPremium && premiumFeatureFor(message);
+    if (premium) {
+        msgs.push({
+            role: 'system',
+            content:
+                `NOTE: "${premium.feature}" is a piSignage PAID-EDITION feature (managed cloud or self-hosted white-label). ` +
+                'It is NOT available in this open-source server. Make that clear, and describe how it works in those editions only briefly, based on the HELP ARTICLES. ' +
+                'Do NOT give step-by-step instructions that imply it can be done on this open-source server, and do not invent UI menus.'
+        });
     }
     msgs.push({ role: 'user', content: message });
     return { messages: msgs, sources, toolDefs };
@@ -940,6 +1035,14 @@ export const chat = async (req, res) => {
         return rest.sendError(res, 'A "message" string is required', null);
     }
 
+    // Read-only guard: never let the model claim it will perform a write action.
+    if (isWriteCommand(message)) {
+        return rest.sendSuccess(res, 'assistant reply', {
+            reply: READONLY_REFUSAL,
+            toolTrace: []
+        });
+    }
+
     const { messages, sources, toolDefs } = await buildMessages(message, history);
 
     const toolTrace = []; // what tools ran, for transparency in the UI
@@ -956,6 +1059,7 @@ export const chat = async (req, res) => {
                 // real article links ourselves so citations can't be fabricated.
                 return rest.sendSuccess(res, 'assistant reply', {
                     reply:
+                        premiumFeatureBanner(message) +
                         (reply.content || '') +
                         citationFooter(sources, dataToolUsed),
                     toolTrace
@@ -1039,9 +1143,21 @@ export const chatStream = async (req, res) => {
         if (!finished) controller.abort();
     });
 
+    // Read-only guard: refuse write commands in code, before the model runs.
+    if (isWriteCommand(message)) {
+        emit({ type: 'token', text: READONLY_REFUSAL });
+        emit({ type: 'done', toolTrace: [] });
+        finished = true;
+        return res.end();
+    }
+
     const { messages, sources, toolDefs } = await buildMessages(message, history);
     const toolTrace = [];
     let dataToolUsed = false;
+
+    // Lead with the paid-edition notice (before the model's answer streams).
+    const banner = premiumFeatureBanner(message);
+    if (banner) emit({ type: 'token', text: banner });
 
     try {
         for (let i = 0; i < A.maxToolIterations; i++) {
