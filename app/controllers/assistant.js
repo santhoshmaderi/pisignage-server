@@ -24,8 +24,158 @@ import * as rest from '../others/restware.js';
 import { Player } from '../models/player.js';
 import { Group } from '../models/group.js';
 import { Asset } from '../models/assets.js';
+import { Settings } from '../models/settings.js';
 
 const A = config.assistant;
+
+/* --------------------------------------------------------------------------
+ * Enablement gate
+ *
+ * The assistant is OFF by default (settings.assistantEnabled === false). An
+ * operator turns it on in Settings, then runs scripts/install-llm.sh to install
+ * the local LLM. Both chat endpoints check this flag first so the feature can be
+ * shipped dark and only lights up once the admin has opted in AND installed the
+ * model. Reads the flag straight off the Settings document (no settings doc yet
+ * → treat as disabled, matching the schema default).
+ * ------------------------------------------------------------------------ */
+async function assistantEnabled() {
+    try {
+        const s = await Settings.findOne().lean().exec();
+        return !!(s && s.assistantEnabled);
+    } catch {
+        return false; // DB hiccup → fail closed
+    }
+}
+
+// Which model to run. Precedence: the model chosen in Settings
+// (settings.assistantModel) wins; otherwise fall back to the env/default
+// (OLLAMA_MODEL / config.assistant.model). Read per-request so a change in
+// Settings takes effect immediately, no restart needed.
+async function resolveModel() {
+    try {
+        const s = await Settings.findOne().lean().exec();
+        const chosen = s && s.assistantModel && String(s.assistantModel).trim();
+        if (chosen) return chosen;
+    } catch {
+        /* fall through to default */
+    }
+    return A.model;
+}
+
+// Ask Ollama for a model's capabilities via /api/show. Returns true/false when
+// Ollama reports capabilities (newer versions), or null when it can't be
+// determined (older Ollama, or the call failed) — the UI treats null as
+// "unknown" rather than hiding the model.
+async function modelSupportsTools(name) {
+    try {
+        const url = `${A.ollamaUrl.replace(/\/$/, '')}/api/show`;
+        // Send both keys: newer Ollama expects `model`, older accepts `name`.
+        const { data } = await axios.post(
+            url,
+            { name, model: name },
+            { timeout: 5000 }
+        );
+        const caps = data && data.capabilities;
+        return Array.isArray(caps) ? caps.includes('tools') : null;
+    } catch {
+        return null;
+    }
+}
+
+// Shown when the assistant is switched off. Kept as one plain message so both
+// the buffered and streaming endpoints can return the same guidance.
+const DISABLED_MESSAGE =
+    "The piSignage Assistant is currently **turned off**.\n\n" +
+    'To use it: open **Settings → piSignage Assistant** and enable it, then run the ' +
+    'one-time install script on your server to set up the local AI model:\n\n' +
+    '1. `cd` into your piSignage server directory\n' +
+    '2. Run `sudo bash scripts/install-llm.sh`\n' +
+    '3. Wait for the model to download, then reload this page.\n\n' +
+    'The assistant runs a small language model **locally** on your server — nothing leaves your network.';
+
+/**
+ * GET /api/assistant/status
+ * Lightweight health probe the UI uses to decide whether to show the assistant
+ * launcher and to render setup guidance. Reports whether the feature flag is on,
+ * whether the local Ollama runtime is reachable, and whether the configured
+ * model has actually been pulled.
+ */
+export const status = async (req, res) => {
+    const enabled = await assistantEnabled();
+    const model = await resolveModel();
+    const ollama = { reachable: false, modelInstalled: false, models: [] };
+    try {
+        const url = `${A.ollamaUrl.replace(/\/$/, '')}/api/tags`;
+        const { data } = await axios.get(url, { timeout: 3000 });
+        ollama.reachable = true;
+        const names = Array.isArray(data.models)
+            ? data.models.map((m) => m && m.name).filter(Boolean)
+            : [];
+        ollama.models = names;
+        // Exact-tag match: the chat request asks Ollama for this exact name, so
+        // "installed" must mean this exact tag is present (a same-family but
+        // different tag would still fail the actual chat call).
+        ollama.modelInstalled = names.includes(model);
+    } catch {
+        /* Ollama not installed / not running — reachable stays false */
+    }
+    // ready = the operator can actually chat right now.
+    const ready = enabled && ollama.reachable && ollama.modelInstalled;
+    return rest.sendSuccess(res, 'assistant status', {
+        enabled,
+        ready,
+        model,
+        ollamaUrl: A.ollamaUrl,
+        ollama
+    });
+};
+
+/**
+ * GET /api/assistant/models
+ * List the models installed in the local Ollama, annotated with whether each
+ * supports tool/function calling (the assistant relies on tools, so non-tool
+ * models can't drive it). The Settings UI uses this to populate the model
+ * picker. `tools` is true/false when Ollama reports capabilities, or null when
+ * it can't be determined.
+ */
+export const models = async (req, res) => {
+    const current = await resolveModel();
+    const payload = { current, models: [] };
+    let list = [];
+    try {
+        const url = `${A.ollamaUrl.replace(/\/$/, '')}/api/tags`;
+        const { data } = await axios.get(url, { timeout: 3000 });
+        list = Array.isArray(data.models) ? data.models : [];
+    } catch {
+        return rest.sendSuccess(res, 'assistant models (ollama unreachable)', {
+            ...payload,
+            reachable: false
+        });
+    }
+
+    const annotated = await Promise.all(
+        list
+            .filter((m) => m && m.name)
+            .map(async (m) => ({
+                name: m.name,
+                tools: await modelSupportsTools(m.name),
+                size: m.size || null,
+                family: (m.details && m.details.family) || null
+            }))
+    );
+
+    // Tool-capable first, then unknown, then non-tool; alphabetical within each.
+    const rank = (t) => (t === true ? 0 : t === null ? 1 : 2);
+    annotated.sort(
+        (a, b) => rank(a.tools) - rank(b.tools) || a.name.localeCompare(b.name)
+    );
+
+    return rest.sendSuccess(res, 'assistant models', {
+        ...payload,
+        reachable: true,
+        models: annotated
+    });
+};
 
 const SYSTEM_PROMPT = `You are the piSignage assistant, embedded in a digital-signage management server.
 You help operators check the status of their players, groups, playlists and media, and you suggest troubleshooting steps.
@@ -40,6 +190,7 @@ Rules:
 - When the user names a player or group, pass that name to the relevant tool (matching is case-insensitive and partial).
 - "Deployed"/"last deployed" is a property of a GROUP, not a player. Use get_group for deploy times.
 - A player is online if isConnected is true; otherwise report it offline and mention when it was lastReported.
+- ONLINE/OFFLINE QUESTIONS ("which players are offline?", "is anything down?", "how many are online?"): call list_players with NO arguments and answer STRICTLY from the returned offlineCount / offlinePlayers / onlineCount / onlinePlayers fields — these always describe the WHOLE fleet. If offlineCount is 0 say all are online; otherwise LIST the offlinePlayers by name. Do NOT conclude "all online" from an empty players array — that only means a filter was applied; the counts are the source of truth.
 - DIAGNOSE FROM THE LIVE SERVER FIRST. For any troubleshooting/how-to question (blank screen, offline player, stuck sync, TV won't turn on, video not playing, resolution wrong, etc.), a snapshot of the relevant player/group state is AUTOMATICALLY retrieved and included as a system message beginning "LIVE SERVER STATE". Read it FIRST and look for a concrete cause in the real data: is the player offline (online=false) or last reported long ago? is syncInProgress true (content still downloading)? is the TV off (tvOn=false)? was the group never/just deployed (lastDeployedAgo)? is disk space low? If the live state explains the problem, LEAD your answer with that specific finding (e.g. "\`lobby\` is offline — last seen 3h ago").
 - Help articles are ALSO retrieved automatically in a system message beginning "HELP ARTICLES". AFTER the live-state diagnosis, use them for the step-by-step fix. If no LIVE SERVER STATE was provided (the user didn't name a player, or none matched), you MAY call the data tools (list_players, get_player_status, get_group…) to fetch the state you need before giving doc-based steps.
 - Structure a troubleshooting answer as: (1) a one-line finding from the live state (or the most likely cause if the state is inconclusive), then (2) numbered fix steps drawn from the articles. Do NOT write your own "More:"/Source/URL line — the article links are appended automatically.
@@ -112,12 +263,49 @@ const humanizeAgo = (date) => {
     return `${Math.round(h / 24)}d ago`;
 };
 
-// Compact, LLM-friendly view of a player document.
-const playerView = (p) => ({
-    name: p.name,
+// The playlist name(s) a player is actually running, derived from its group the
+// same way players.js sendConfig() pushes them: the DEPLOYED set once a deploy
+// has happened, else the assigned set. Modern players run several playlists;
+// legacy players a single one. The player's OWN `currentPlaylist` field is only
+// maintained by the server for legacy (v0) players, so it's stale/empty for
+// modern players — we derive from the group instead. `groups` is a
+// Map(groupId -> group doc) from loadGroupsById(); without it we fall back to
+// the legacy field.
+const runningPlaylists = (player, groups) => {
+    const g = groups && player.group && player.group._id
+        ? groups.get(String(player.group._id))
+        : null;
+    if (g) {
+        const deployed = g.deployedPlaylists && g.deployedPlaylists.length > 0;
+        const refs = (deployed ? g.deployedPlaylists : g.playlists) || [];
+        return refs
+            .map((pl) => (typeof pl === 'string' ? pl : pl && pl.name))
+            .filter(Boolean);
+    }
+    return player.currentPlaylist ? [player.currentPlaylist] : [];
+};
+
+// Load all groups into a Map keyed by id string, so a batch of players can be
+// resolved to their running playlists with a single DB read.
+async function loadGroupsById() {
+    try {
+        const list = await Group.list({ criteria: {}, perPage: 500, page: 0 });
+        return new Map(list.map((g) => [String(g._id), g]));
+    } catch {
+        return new Map();
+    }
+}
+
+// Compact, LLM-friendly view of a player document. Some records have no name
+// set yet (registered but never named) — fall back to the CPU serial so the
+// model can still refer to the player instead of saying "undefined".
+// `groups` (Map from loadGroupsById) lets us report the playlists the player is
+// actually running; without it we fall back to the legacy currentPlaylist field.
+const playerView = (p, groups) => ({
+    name: p.name || (p.cpuSerialNumber ? `(unnamed · ${p.cpuSerialNumber})` : '(unnamed player)'),
     group: p.group && p.group.name,
     online: !!p.isConnected,
-    currentPlaylist: p.currentPlaylist || null,
+    playlists: runningPlaylists(p, groups),
     lastReported: formatWhen(p.lastReported),
     lastReportedAgo: humanizeAgo(p.lastReported),
     syncInProgress: !!p.syncInProgress,
@@ -148,19 +336,36 @@ const groupView = (g) => ({
  * Tool implementations (all read-only)
  * ------------------------------------------------------------------------ */
 
-async function listPlayers({ filter, onlineOnly } = {}) {
+async function listPlayers({ filter, onlineOnly, offlineOnly } = {}) {
     const players = await Player.find({}).sort({ name: 1 }).lean().exec();
-    let views = players.map(playerView);
+    const groups = await loadGroupsById();
+    let views = players.map((p) => playerView(p, groups));
     if (filter) {
         views = views.filter(
             (p) => like(p.name, filter) || like(p.group, filter)
         );
     }
-    if (onlineOnly) views = views.filter((p) => p.online);
+    // Compute the online/offline split up front so the summary is ALWAYS
+    // complete — even if the caller asked for onlineOnly (a small model will
+    // sometimes pass onlineOnly:true for a "which are offline?" question, which
+    // previously hid every offline player and led to a wrong "all online"
+    // answer). The counts and name lists below never lie about the fleet; only
+    // the detailed `players` array respects the online/offline filter.
+    const onlineViews = views.filter((p) => p.online);
+    const offlineViews = views.filter((p) => !p.online);
+
+    let shown = views;
+    if (offlineOnly) shown = offlineViews;
+    else if (onlineOnly) shown = onlineViews;
+
     return {
         total: views.length,
-        online: views.filter((p) => p.online).length,
-        players: views.slice(0, 100)
+        onlineCount: onlineViews.length,
+        offlineCount: offlineViews.length,
+        // Explicit name lists so the model doesn't have to filter the array.
+        onlinePlayers: onlineViews.map((p) => p.name),
+        offlinePlayers: offlineViews.map((p) => p.name),
+        players: shown.slice(0, 100)
     };
 }
 
@@ -169,7 +374,8 @@ async function getPlayerStatus({ name }) {
     const players = await Player.find({}).lean().exec();
     const match = players.find((p) => like(p.name, name));
     if (!match) return { error: `No player matching "${name}"` };
-    return playerView(match);
+    const groups = await loadGroupsById();
+    return playerView(match, groups);
 }
 
 async function listGroups() {
@@ -191,10 +397,11 @@ async function getAssignedPlaylist({ playerName, groupName }) {
         const players = await Player.find({}).lean().exec();
         const p = players.find((x) => like(x.name, playerName));
         if (!p) return { error: `No player matching "${playerName}"` };
+        const groups = await loadGroupsById();
         return {
             player: p.name,
             group: p.group && p.group.name,
-            currentPlaylist: p.currentPlaylist || null,
+            playlists: runningPlaylists(p, groups),
             online: !!p.isConnected
         };
     }
@@ -299,12 +506,18 @@ const isContentAsset = (n) =>
     !/^custom_layout.*\.html$/i.test(n);
 
 // Resolve every asset reachable from a group: union of its playlists' media
-// plus any group-level deployed assets. Returns { playlists, assets, byPlaylist }.
+// plus any group-level assets. Returns { playlists, assets, byPlaylist }.
+//
+// Mirrors what the player ACTUALLY runs — see sendConfig() in players.js: the
+// DEPLOYED set is authoritative once a deploy has happened, and only when the
+// group was never deployed do we fall back to the assigned/staged set. Using
+// the assigned set instead would describe content that isn't on the screen yet
+// after an edit-without-deploy.
 async function resolveGroupAssets(group) {
-    const refs =
-        (group.playlists && group.playlists.length
-            ? group.playlists
-            : group.deployedPlaylists) || [];
+    const deployed = !!(group.deployedPlaylists && group.deployedPlaylists.length > 0);
+    const refs = (deployed ? group.deployedPlaylists : group.playlists) || [];
+    const groupAssets = (deployed ? group.deployedAssets : group.assets) || [];
+
     const playlistNames = refs
         .map((pl) => (typeof pl === 'string' ? pl : pl && pl.name))
         .filter(Boolean);
@@ -316,8 +529,9 @@ async function resolveGroupAssets(group) {
         byPlaylist[name] = [...new Set(files)];
         files.forEach((f) => assetSet.add(f));
     }
-    // Group-level deployed assets (already-flattened list stored on the group).
-    for (const a of group.assets || []) {
+    // Group-level assets (already-flattened list stored on the group), taking
+    // the same deployed/assigned choice as the playlists above.
+    for (const a of groupAssets) {
         const name = typeof a === 'string' ? a : a && a.filename;
         if (isContentAsset(name)) assetSet.add(name);
     }
@@ -589,12 +803,13 @@ const TOOLS = [
             function: {
                 name: 'list_players',
                 description:
-                    'List ALL signage players and their status (online/offline, current playlist, last reported). Call with NO arguments to list every player. Only pass "filter" when the user explicitly named a specific player or group to narrow to.',
+                    'List signage players and their status. The result ALWAYS includes total, onlineCount, offlineCount, and the full onlinePlayers and offlinePlayers name lists — so to answer "which players are offline/online?" just read offlinePlayers/onlinePlayers; you do NOT need onlineOnly/offlineOnly for that. Call with NO arguments for everything. Only pass "filter" when the user named a specific player or group.',
                 parameters: {
                     type: 'object',
                     properties: {
                         filter: { type: 'string', description: 'OPTIONAL substring; omit to list all players' },
-                        onlineOnly: { type: 'boolean', description: 'If true, only return currently-online players' }
+                        onlineOnly: { type: 'boolean', description: 'If true, the detailed players array is limited to online players (counts/name-lists are still complete)' },
+                        offlineOnly: { type: 'boolean', description: 'If true, the detailed players array is limited to offline players (counts/name-lists are still complete)' }
                     }
                 }
             }
@@ -650,7 +865,7 @@ const TOOLS = [
             function: {
                 name: 'get_assigned_playlist',
                 description:
-                    'Find which playlist is assigned/playing. Pass playerName for the live current playlist on a player, or groupName for the assigned/deployed playlists of a group.',
+                    'Find which playlist(s) are playing. Pass playerName for the playlists a player is currently running (resolved from its group), or groupName for the assigned/deployed playlists of a group.',
                 parameters: {
                     type: 'object',
                     properties: {
@@ -768,12 +983,12 @@ const TOOL_IMPL = new Map(TOOLS.map((t) => [t.def.function.name, t.run]));
  * Ollama plumbing
  * ------------------------------------------------------------------------ */
 
-async function ollamaChat(messages, toolDefs = TOOL_DEFS) {
+async function ollamaChat(messages, toolDefs = TOOL_DEFS, model = A.model) {
     const url = `${A.ollamaUrl.replace(/\/$/, '')}/api/chat`;
     const { data } = await axios.post(
         url,
         {
-            model: A.model,
+            model,
             messages,
             tools: toolDefs,
             stream: false,
@@ -790,12 +1005,12 @@ async function ollamaChat(messages, toolDefs = TOOL_DEFS) {
  * fully-assembled { content, tool_calls } once this response completes.
  * `signal` (optional AbortSignal) cancels the upstream request.
  */
-async function ollamaChatStream(messages, onToken, signal, toolDefs = TOOL_DEFS) {
+async function ollamaChatStream(messages, onToken, signal, toolDefs = TOOL_DEFS, model = A.model) {
     const url = `${A.ollamaUrl.replace(/\/$/, '')}/api/chat`;
     const response = await axios.post(
         url,
         {
-            model: A.model,
+            model,
             messages,
             tools: toolDefs,
             stream: true,
@@ -884,6 +1099,10 @@ async function retrieveServerState(message) {
     }
     if (!players.length && !groups.length) return null;
 
+    // Index groups by id so playerView can report each player's actually-running
+    // playlists (reuses the groups we already loaded — no extra DB read).
+    const groupsMap = new Map(groups.map((g) => [String(g._id), g]));
+
     // Pad with spaces so a bare name at the start/end still matches on a word.
     const hay = ` ${message.toLowerCase()} `;
     const named = (name) =>
@@ -898,7 +1117,7 @@ async function retrieveServerState(message) {
     if (matchedPlayers.length) {
         parts.push(
             'Player(s) named in the question:\n' +
-            JSON.stringify(matchedPlayers.map(playerView), null, 2)
+            JSON.stringify(matchedPlayers.map((p) => playerView(p, groupsMap)), null, 2)
         );
     }
     if (matchedGroups.length) {
@@ -909,7 +1128,7 @@ async function retrieveServerState(message) {
     }
     // Nothing specific named → give a fleet-health overview to diagnose from.
     if (!matchedPlayers.length && !matchedGroups.length && players.length) {
-        const views = players.map(playerView);
+        const views = players.map((p) => playerView(p, groupsMap));
         const offline = views.filter((p) => !p.online);
         const syncing = views.filter((p) => p.syncInProgress);
         parts.push(
@@ -1111,6 +1330,15 @@ export const chat = async (req, res) => {
         return rest.sendError(res, 'A "message" string is required', null);
     }
 
+    // Feature gate: assistant is opt-in and off by default.
+    if (!(await assistantEnabled())) {
+        return rest.sendSuccess(res, 'assistant disabled', {
+            reply: DISABLED_MESSAGE,
+            disabled: true,
+            toolTrace: []
+        });
+    }
+
     // Read-only guard: never let the model claim it will perform a write action.
     if (isWriteCommand(message)) {
         return rest.sendSuccess(res, 'assistant reply', {
@@ -1120,12 +1348,13 @@ export const chat = async (req, res) => {
     }
 
     const { messages, sources, toolDefs, injectHelp } = await buildMessages(message, history);
+    const model = await resolveModel();
 
     const toolTrace = []; // what tools ran, for transparency in the UI
 
     try {
         for (let i = 0; i < A.maxToolIterations; i++) {
-            const reply = await ollamaChat(messages, toolDefs);
+            const reply = await ollamaChat(messages, toolDefs, model);
             messages.push(reply);
 
             const calls = reply.tool_calls || [];
@@ -1176,7 +1405,7 @@ export const chat = async (req, res) => {
         // Most common failure: Ollama not running / model not pulled.
         const hint =
             err.code === 'ECONNREFUSED'
-                ? ` Is Ollama running at ${A.ollamaUrl}? Start it and run: ollama pull ${A.model}`
+                ? ` Is Ollama running at ${A.ollamaUrl}? Start it and run: ollama pull ${model}`
                 : '';
         return rest.sendError(res, `Assistant error.${hint}`, err);
     }
@@ -1208,6 +1437,14 @@ export const chatStream = async (req, res) => {
 
     const emit = (event) => res.write(JSON.stringify(event) + '\n');
 
+    // Feature gate: assistant is opt-in and off by default. Emit the setup
+    // guidance as a normal token stream so the UI renders it like any reply.
+    if (!(await assistantEnabled())) {
+        emit({ type: 'token', text: DISABLED_MESSAGE });
+        emit({ type: 'done', toolTrace: [], disabled: true });
+        return res.end();
+    }
+
     // Abort the upstream Ollama call if the client hangs up. Listen on the
     // RESPONSE 'close' (fires on real disconnect) — not req 'close', which fires
     // as soon as body-parser finishes reading the request body.
@@ -1226,6 +1463,7 @@ export const chatStream = async (req, res) => {
     }
 
     const { messages, sources, toolDefs, injectHelp } = await buildMessages(message, history);
+    const model = await resolveModel();
     const toolTrace = [];
 
     // Lead with the paid-edition notice (before the model's answer streams).
@@ -1238,7 +1476,8 @@ export const chatStream = async (req, res) => {
                 messages,
                 (text) => emit({ type: 'token', text }),
                 controller.signal,
-                toolDefs
+                toolDefs,
+                model
             );
             messages.push({
                 role: 'assistant',
@@ -1289,7 +1528,7 @@ export const chatStream = async (req, res) => {
         finished = true;
         const hint =
             err.code === 'ECONNREFUSED'
-                ? ` Is Ollama running at ${A.ollamaUrl}? Run: ollama pull ${A.model}`
+                ? ` Is Ollama running at ${A.ollamaUrl}? Run: ollama pull ${model}`
                 : '';
         emit({ type: 'error', message: `Assistant error.${hint} ${err.message || ''}`.trim() });
         return res.end();

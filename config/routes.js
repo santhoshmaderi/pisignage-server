@@ -105,6 +105,8 @@ export default () => {
     router.delete('/api/licensefiles/:filename', licenses.deleteLicense);
 
     // AI assistant route (read-only chat over players/groups/assets/playlists)
+    router.get('/api/assistant/status', assistant.status);
+    router.get('/api/assistant/models', assistant.models);
     router.post('/api/assistant/chat', assistant.chat);
     router.post('/api/assistant/chat/stream', assistant.chatStream);
 
