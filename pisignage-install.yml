@@ -39,6 +39,34 @@
   become: true
   gather_facts: true
 
+  # Ask up front whether to set up the optional local-LLM assistant. This prompt
+  # is skipped automatically when the value is supplied non-interactively, e.g.
+  # for an unattended run:  -e enable_assistant=yes   (or =no).
+  vars_prompt:
+    - name: enable_assistant
+      prompt: |-
+        Enable the piSignage AI Assistant?
+
+        The assistant powers the in-app chat for checking player/group status and
+        troubleshooting. It runs entirely on your own server — nothing leaves your
+        network.
+
+        If you choose yes, this playbook will:
+          • install Ollama (the local AI runtime) and start it as a service, and
+          • download a small ~2-3 GB language model (CPU-only, no GPU needed).
+
+        Requirements:
+          • at least 4 GB of RAM (2 GB free for the model while it runs)
+          • ~3 GB of free disk space
+          • internet access to download Ollama and the model (one-time)
+
+        You can always turn it on or off later in Settings. Choosing no here just
+        skips the install — the rest of the server is set up normally.
+
+        Set up the assistant now? [y/N]
+      private: false
+      default: "no"
+
   vars:
     # --- Who/where -----------------------------------------------------------
     # Dedicated service account the app runs as. Always defaults to 'pisignage'
@@ -57,7 +85,20 @@
     run_audit_fix: true
     open_firewall: true
 
+    # --- piSignage Assistant (optional local-LLM chat) -----------------------
+    # Whether to set it up is asked interactively (vars_prompt above) or via
+    # -e enable_assistant=yes|no. These govern what gets installed and how the
+    # feature flag is flipped once the app is up.
+    assistant_model: "qwen2.5:3b"       # must be a tool-capable Ollama model
+    ollama_port: 11434
+    # Credentials the playbook uses to flip the Settings flag through the app's
+    # API (defaults match the app's out-of-the-box Download-Access login).
+    assistant_admin_user: pi
+    assistant_admin_password: pi
+
     # --- Derived (do not usually change) ------------------------------------
+    # Normalise the y/n prompt (or -e override) into a real boolean.
+    _assistant_on: "{{ (enable_assistant | string | lower) in ['y', 'yes', 'true', '1', 'on'] }}"
     repo_dir: "{{ install_dir }}/pisignage-server"
     media_dir: "{{ install_dir }}/media"
     service_name: pisignage
@@ -381,6 +422,79 @@
       delay: 3
       until: v2_check.status == 200
 
+    # =========================================================================
+    # 8. piSignage Assistant (optional — local-LLM chat via Ollama)
+    #    Runs ONLY when the operator opted in at the prompt. Installs Ollama,
+    #    pulls the model, and turns the feature on in Settings. Wrapped in a
+    #    block/rescue so any failure here leaves the (already-running) core
+    #    server intact — the assistant simply stays off.
+    # =========================================================================
+    - name: piSignage Assistant setup
+      when: _assistant_on
+      block:
+        - name: "[assistant] Check whether Ollama is already installed"
+          ansible.builtin.command: ollama --version
+          register: ollama_check
+          changed_when: false
+          failed_when: false
+
+        - name: "[assistant] Download the official Ollama installer"
+          ansible.builtin.get_url:
+            url: https://ollama.com/install.sh
+            dest: /tmp/ollama-install.sh
+            mode: "0755"
+          when: ollama_check.rc != 0
+
+        - name: "[assistant] Install Ollama"
+          ansible.builtin.command: sh /tmp/ollama-install.sh
+          when: ollama_check.rc != 0
+
+        - name: "[assistant] Enable and start the Ollama service"
+          ansible.builtin.systemd:
+            name: ollama
+            enabled: true
+            state: started
+            daemon_reload: true
+
+        - name: "[assistant] Wait for the Ollama API to accept connections"
+          ansible.builtin.wait_for:
+            host: 127.0.0.1
+            port: "{{ ollama_port }}"
+            timeout: 60
+
+        - name: "[assistant] Pull the model '{{ assistant_model }}' (first run can take several minutes)"
+          ansible.builtin.command: "ollama pull {{ assistant_model }}"
+          register: ollama_pull
+          changed_when: "'success' in ollama_pull.stdout or 'pulling manifest' in ollama_pull.stdout"
+
+        # Flip the feature flag via the running app's settings API. updateSettings
+        # creates the Settings document if it doesn't exist yet, so this works on
+        # a fresh install and is safe to re-run.
+        - name: "[assistant] Enable the assistant in Settings (assistantEnabled + model)"
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:{{ app_port }}/api/settings"
+            method: POST
+            force_basic_auth: true
+            user: "{{ assistant_admin_user }}"
+            password: "{{ assistant_admin_password }}"
+            body_format: json
+            body:
+              assistantEnabled: true
+              assistantModel: "{{ assistant_model }}"
+            status_code: 200
+          register: assistant_enable
+          retries: 3
+          delay: 3
+          until: assistant_enable.status == 200
+      rescue:
+        - name: "[assistant] Setup failed — leaving the assistant OFF"
+          ansible.builtin.debug:
+            msg:
+              - "⚠️  piSignage Assistant setup did not complete."
+              - "The core server is installed and running; only the assistant is off."
+              - "Retry later: install Ollama (https://ollama.com), run"
+              - "  'ollama pull {{ assistant_model }}', then enable it in Settings → piSignage Assistant."
+
   handlers:
     - name: Restart pisignage
       ansible.builtin.systemd:
@@ -395,6 +509,7 @@
           - "✅ pisignage-server is installed and running."
           - "URL:        http://{{ ansible_default_ipv4.address | default('<server-ip>') }}:{{ app_port }}/  (redirects to the v2 UI)"
           - "Login:      pi / pi   (change under Settings → Download Access)"
+          - "Assistant:  {{ 'ENABLED — model ' + assistant_model + ' via Ollama' if _assistant_on else 'off (enable later in Settings → piSignage Assistant)' }}"
           - "Service:    systemctl status {{ service_name }}   |   journalctl -u {{ service_name }} -f"
           - "App logs:   {{ install_dir }}/pisignage.log"
           - "Code:       {{ repo_dir }}  (branch {{ repo_branch }}, run as user '{{ app_user }}')"
