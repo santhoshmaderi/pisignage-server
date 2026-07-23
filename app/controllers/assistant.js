@@ -40,19 +40,17 @@ Rules:
 - When the user names a player or group, pass that name to the relevant tool (matching is case-insensitive and partial).
 - "Deployed"/"last deployed" is a property of a GROUP, not a player. Use get_group for deploy times.
 - A player is online if isConnected is true; otherwise report it offline and mention when it was lastReported.
-- Relevant help articles are AUTOMATICALLY retrieved and included in this conversation as a system message beginning "HELP ARTICLES". For any troubleshooting/how-to question (blank screen, offline player, stuck sync, TV won't turn on, video not playing, resolution wrong, etc.), read those articles FIRST and base your answer primarily on them. Then add your own clear, step-by-step guidance.
-- IMPORTANT: For a troubleshooting or how-to question, answer using ONLY the HELP ARTICLES — do NOT call list_players, get_player_status, get_group or any other data tool. Phrases like "my player screen is blank" or "youtube not playing" are troubleshooting questions, NOT requests for player status. Only call the player/group/asset data tools when the user explicitly asks about the current status, list, or count of their players/groups/playlists/media (e.g. "which players are offline", "list groups", "what playlist is the lobby running").
-- Structure troubleshooting answers as: a one-line summary of the likely cause, then numbered steps drawn from the articles, then "More: <url>" citing the Source URL of the article you relied on.
+- DIAGNOSE FROM THE LIVE SERVER FIRST. For any troubleshooting/how-to question (blank screen, offline player, stuck sync, TV won't turn on, video not playing, resolution wrong, etc.), a snapshot of the relevant player/group state is AUTOMATICALLY retrieved and included as a system message beginning "LIVE SERVER STATE". Read it FIRST and look for a concrete cause in the real data: is the player offline (online=false) or last reported long ago? is syncInProgress true (content still downloading)? is the TV off (tvOn=false)? was the group never/just deployed (lastDeployedAgo)? is disk space low? If the live state explains the problem, LEAD your answer with that specific finding (e.g. "\`lobby\` is offline — last seen 3h ago").
+- Help articles are ALSO retrieved automatically in a system message beginning "HELP ARTICLES". AFTER the live-state diagnosis, use them for the step-by-step fix. If no LIVE SERVER STATE was provided (the user didn't name a player, or none matched), you MAY call the data tools (list_players, get_player_status, get_group…) to fetch the state you need before giving doc-based steps.
+- Structure a troubleshooting answer as: (1) a one-line finding from the live state (or the most likely cause if the state is inconclusive), then (2) numbered fix steps drawn from the articles. Do NOT write your own "More:"/Source/URL line — the article links are appended automatically.
 - ONLY cite a URL that appears verbatim in a "Source:" line of the provided HELP ARTICLES. NEVER invent, guess, or construct a URL. If the articles don't cover the question, say so and give at most one general suggestion — do not invent detailed steps.
 - NEVER say you are "about to" search, check or look something up. Answer directly from the articles already provided. Do not end your reply with a promise to check something.
 - You may still call search_help_docs to look up a DIFFERENT topic than what was retrieved, using only symptom/topic words (never player/group names).
 - NEVER mention tool names, function names, or internal mechanics to the user (never write "list_players", "search_help_docs", "get_group", etc.). Speak like a human support engineer. Call tools silently; the user only sees your final answer.
 - Be concise. Prefer short numbered steps over long prose. Report times in a human-friendly way.
 - Formatting: wrap every file name, asset name, playlist name and group name in backticks (e.g. \`image2.jpg\`, \`Test\`) so they render as distinct chips. When listing a playlist's or player's assets, use a numbered or bulleted list with the file name first, then its details (type, duration, zone) after a dash — keep each item on one line.
-- Try to answer from the documentation provided below first. If the docs don't cover it, and not simple common clarifications, say "I don't have documentation on that" and suggest
-  contacting support@pisignage.com.
-- Be concise: 2-5 sentences for simple questions, steps for procedures.
-- Always cite the source: [Article title](url). For video sources, link the timestamp.
+- Try to answer from the documentation provided first. If the docs don't cover a support/how-to question, and it's not a simple common clarification, say "I don't have documentation on that" and suggest contacting support@pisignage.com.
+- Do NOT append a citation, "Source", or "[Article title](url)" line yourself. Real article links are added automatically after your answer when relevant — for status/data answers (players, groups, playlists, assets) there is NO article to cite, so never invent one.
 - If the user's problem suggests a common mistake (e.g. duration in ms vs seconds), point it out proactively.
 - Ask ONE clarifying question if the request is ambiguous.
 - This assistant is READ-ONLY: you cannot deploy, delete or change anything. If asked to, explain that write actions aren't enabled yet.`;
@@ -866,6 +864,81 @@ async function retrieveHelpContext(message) {
     return { context, sources };
 }
 
+// Diagnose-first: on a troubleshooting turn, deterministically fetch a snapshot
+// of the LIVE server state and inject it so the model reasons from real data
+// before it reaches for the docs. If the user named a player/group we snapshot
+// those; otherwise we summarise fleet health (offline players, in-progress
+// syncs) so a "why is my screen blank?" still gets grounded in reality.
+async function retrieveServerState(message) {
+    let players = [];
+    let groups = [];
+    try {
+        players = await Player.find({}).lean().exec();
+    } catch {
+        /* DB optional — fall through to whatever we have */
+    }
+    try {
+        groups = await Group.list({ criteria: {}, perPage: 500, page: 0 });
+    } catch {
+        /* DB optional */
+    }
+    if (!players.length && !groups.length) return null;
+
+    // Pad with spaces so a bare name at the start/end still matches on a word.
+    const hay = ` ${message.toLowerCase()} `;
+    const named = (name) =>
+        typeof name === 'string' &&
+        name.length >= 2 &&
+        hay.includes(name.toLowerCase());
+
+    const matchedPlayers = players.filter((p) => named(p.name)).slice(0, 5);
+    const matchedGroups = groups.filter((g) => named(g.name)).slice(0, 5);
+
+    const parts = [];
+    if (matchedPlayers.length) {
+        parts.push(
+            'Player(s) named in the question:\n' +
+            JSON.stringify(matchedPlayers.map(playerView), null, 2)
+        );
+    }
+    if (matchedGroups.length) {
+        parts.push(
+            'Group(s) named in the question:\n' +
+            JSON.stringify(matchedGroups.map(groupView), null, 2)
+        );
+    }
+    // Nothing specific named → give a fleet-health overview to diagnose from.
+    if (!matchedPlayers.length && !matchedGroups.length && players.length) {
+        const views = players.map(playerView);
+        const offline = views.filter((p) => !p.online);
+        const syncing = views.filter((p) => p.syncInProgress);
+        parts.push(
+            'Fleet health overview:\n' +
+            JSON.stringify(
+                {
+                    totalPlayers: views.length,
+                    online: views.length - offline.length,
+                    offline: offline.map((p) => ({
+                        name: p.name,
+                        lastReportedAgo: p.lastReportedAgo
+                    })),
+                    syncInProgress: syncing.map((p) => p.name)
+                },
+                null,
+                2
+            )
+        );
+    }
+    if (!parts.length) return null;
+
+    return (
+        'LIVE SERVER STATE (retrieved now — diagnose from THIS before the help ' +
+        'articles; every status claim you make must come from this data, not a ' +
+        'guess). Ignore if the question is not about a player/group problem.\n\n' +
+        parts.join('\n\n')
+    );
+}
+
 // The help-doc search tool alone (for troubleshooting turns, where we don't
 // want the model wandering off into player/group lookups).
 const HELP_ONLY_TOOL_DEFS = TOOL_DEFS.filter(
@@ -945,34 +1018,40 @@ const premiumFeatureBanner = (msg) => {
     return `💎 **${rule.feature}** isn't part of the open-source server — it's available in piSignage's paid editions (managed cloud or self-hosted white-label). [See what's included ↗](${rule.url})\n\n---\n\n`;
 };
 
-// Returns { toolDefs, injectHelp } for the turn.
+// Returns { toolDefs, injectHelp, injectState } for the turn.
 function classifyTurn(message) {
     // A pinned topic (e.g. licensing) always forces a docs-first answer,
     // overriding status-word heuristics like "my screen shows ...".
     if (PINNED_RULES.some((r) => r.pattern.test(message))) {
-        return { toolDefs: HELP_ONLY_TOOL_DEFS, injectHelp: true };
+        return { toolDefs: HELP_ONLY_TOOL_DEFS, injectHelp: true, injectState: false };
     }
     const isHelp = HELP_RE.test(message);
     const isStatus = STATUS_RE.test(message);
     if (isStatus && !isHelp) {
-        // Pure status/inspection question → data tools, no doc injection.
-        return { toolDefs: TOOL_DEFS, injectHelp: false };
+        // Pure status/inspection question → data tools, no docs, no diagnosis.
+        return { toolDefs: TOOL_DEFS, injectHelp: false, injectState: false };
     }
-    if (isHelp && !isStatus) {
-        // Pure troubleshooting/how-to → docs only, no player/group lookups.
-        return { toolDefs: HELP_ONLY_TOOL_DEFS, injectHelp: true };
-    }
-    // Mixed or unclear → give everything and inject docs (search-first default).
-    return { toolDefs: TOOL_DEFS, injectHelp: true };
+    // Troubleshooting or mixed/unclear → diagnose from the live server FIRST
+    // (inject state on problem turns), then ground the fix in the docs. Give the
+    // full tool set so the model can pull any extra state it still needs.
+    return { toolDefs: TOOL_DEFS, injectHelp: true, injectState: isHelp };
 }
 
 // Build the message list for a turn: system prompt, prior history, the
 // auto-retrieved help articles (when relevant), then the user message. Returns
 // the retrieved `sources` and the tool set the model may use this turn.
 async function buildMessages(message, history) {
-    const { toolDefs, injectHelp } = classifyTurn(message);
+    const { toolDefs, injectHelp, injectState } = classifyTurn(message);
     const msgs = [{ role: 'system', content: SYSTEM_PROMPT }];
     if (Array.isArray(history)) msgs.push(...history.slice(-10));
+
+    // Diagnose-first: live server state goes in BEFORE the help articles so the
+    // model checks the real system before reaching for documentation.
+    if (injectState) {
+        const state = await retrieveServerState(message);
+        if (state) msgs.push({ role: 'system', content: state });
+    }
+
     let sources = [];
     if (injectHelp) {
         const help = await retrieveHelpContext(message);
@@ -992,23 +1071,20 @@ async function buildMessages(message, history) {
         });
     }
     msgs.push({ role: 'user', content: message });
-    return { messages: msgs, sources, toolDefs };
+    return { messages: msgs, sources, toolDefs, injectHelp };
 }
 
 // Build a trustworthy "More:" footer from the actually-retrieved articles.
-// Skipped when a data tool (players/groups/etc.) drove the answer — those turns
-// aren't doc-based — or when nothing was retrieved.
-function citationFooter(sources, dataToolUsed) {
-    if (dataToolUsed || !sources || sources.length === 0) return '';
+// Skipped when this wasn't a help/support turn (suppress=true) or when nothing
+// was retrieved.
+function citationFooter(sources, suppress) {
+    if (suppress || !sources || sources.length === 0) return '';
     const lines = sources
         .slice(0, 3)
         .map((s) => `- ${s.title}: ${s.url}`)
         .join('\n');
     return `\n\nMore:\n${lines}`;
 }
-
-// Data tools are everything except the help-doc search.
-const isDataTool = (name) => name && name !== 'search_help_docs';
 
 // Ollama returns tool-call arguments already parsed as an object; some models /
 // versions return a JSON string. Normalise to an object.
@@ -1043,10 +1119,9 @@ export const chat = async (req, res) => {
         });
     }
 
-    const { messages, sources, toolDefs } = await buildMessages(message, history);
+    const { messages, sources, toolDefs, injectHelp } = await buildMessages(message, history);
 
     const toolTrace = []; // what tools ran, for transparency in the UI
-    let dataToolUsed = false;
 
     try {
         for (let i = 0; i < A.maxToolIterations; i++) {
@@ -1061,7 +1136,7 @@ export const chat = async (req, res) => {
                     reply:
                         premiumFeatureBanner(message) +
                         (reply.content || '') +
-                        citationFooter(sources, dataToolUsed),
+                        citationFooter(sources, !injectHelp),
                     toolTrace
                 });
             }
@@ -1071,7 +1146,6 @@ export const chat = async (req, res) => {
                 const name = call.function && call.function.name;
                 const args = parseArgs(call.function && call.function.arguments);
                 const impl = TOOL_IMPL.get(name);
-                if (isDataTool(name)) dataToolUsed = true;
 
                 let result;
                 if (!impl) {
@@ -1151,9 +1225,8 @@ export const chatStream = async (req, res) => {
         return res.end();
     }
 
-    const { messages, sources, toolDefs } = await buildMessages(message, history);
+    const { messages, sources, toolDefs, injectHelp } = await buildMessages(message, history);
     const toolTrace = [];
-    let dataToolUsed = false;
 
     // Lead with the paid-edition notice (before the model's answer streams).
     const banner = premiumFeatureBanner(message);
@@ -1177,7 +1250,7 @@ export const chatStream = async (req, res) => {
             if (calls.length === 0) {
                 // Stream the trustworthy article links as extra tokens so
                 // citations are always real, then finish.
-                const footer = citationFooter(sources, dataToolUsed);
+                const footer = citationFooter(sources, !injectHelp);
                 if (footer) emit({ type: 'token', text: footer });
                 emit({ type: 'done', toolTrace });
                 finished = true;
@@ -1188,7 +1261,6 @@ export const chatStream = async (req, res) => {
                 const name = call.function && call.function.name;
                 const args = parseArgs(call.function && call.function.arguments);
                 const impl = TOOL_IMPL.get(name);
-                if (isDataTool(name)) dataToolUsed = true;
                 emit({ type: 'tool', name, args });
 
                 let result;
